@@ -1,0 +1,6 @@
+{
+  "name": "wbm-acompanhamento-iot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Sistema de Acompanhamento Diário e Relatório Mensal WBM Technology (MQTT Direto + Google Forms)"
+}

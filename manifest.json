@@ -1,0 +1,16 @@
+{
+  "name": "WBM Technology • Acompanhamento Diário",
+  "short_name": "WBM Forms",
+  "description": "Automação diária de acompanhamento de equipamentos WBM IoT Control para Google Forms",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#08090a",
+  "theme_color": "#2ce610",
+  "icons": [
+    {
+      "src": "./logo-wbm.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}

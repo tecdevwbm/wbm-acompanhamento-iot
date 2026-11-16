@@ -1,0 +1,6 @@
+{
+  "version": 2,
+  "rewrites": [
+    { "source": "/api/snapshot", "destination": "/api/snapshot.js" }
+  ]
+}
