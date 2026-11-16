@@ -1,0 +1,50 @@
+name: Atualizar Snapshot MQTT (AWS + ORACLE)
+
+on:
+  schedule:
+    - cron: '10 11 * * 1-5'   # 08:10 BRT (Seg a Sex - 5 min antes do alerta das 08:15!)
+    - cron: '0 */2 * * *'     # A cada 2 horas
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-mqtt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Coletar Telemetria MQTT (AWS 52.67.133.240 + ORACLE 163.176.56.133)
+        run: |
+          node -e "
+            const fs = require('fs');
+            const fn = require('./api/snapshot.js');
+            const current = JSON.parse(fs.readFileSync('./webapp/mqtt_snapshot.json', 'utf8'));
+            const res = {
+              setHeader(){},
+              status(){ return this; },
+              json(data){
+                for (const [k, v] of Object.entries(data.devices || {})) {
+                  if (current.devices[k]) {
+                    current.devices[k].latest = { ...(current.devices[k].latest || {}), ...(v.latest || {}) };
+                    if (v.last_seen) current.devices[k].last_seen = v.last_seen;
+                  } else {
+                    current.devices[k] = v;
+                  }
+                }
+                current.updated_at = new Date().toISOString();
+                if (data.recent_log && data.recent_log.length) current.recent_log = data.recent_log;
+                fs.writeFileSync('./webapp/mqtt_snapshot.json', JSON.stringify(current, null, 2));
+                console.log('Snapshot atualizado com sucesso!');
+              }
+            };
+            fn({method:'GET'}, res);
+          "
+
+      - name: Salvar Snapshot Atualizado
+        run: |
+          git config user.name "WBM MQTT Bot"
+          git config user.email "tecnico2@wbmtechnology.com.br"
+          git add webapp/mqtt_snapshot.json
+          git diff --staged --quiet || (git commit -m "chore: atualizar telemetria MQTT" && git push)
