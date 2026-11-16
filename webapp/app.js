@@ -462,6 +462,7 @@ async function loadAllDashboardData() {
   const endpoints = [];
   if (window.location.protocol.startsWith("http")) {
     endpoints.push("/api/snapshot");
+    endpoints.push("./webapp/mqtt_snapshot.json");
   }
   endpoints.push(LOCAL_BRIDGE_URL);
 
