@@ -76,19 +76,30 @@
         <div>
           <div class="flex items-center gap-2.5">
             <h1 class="font-bold text-base sm:text-lg text-white tracking-tight">Acompanhamento Diário de Equipamentos</h1>
-            <span class="px-2 py-0.5 text-[10px] font-bold uppercase rounded-md bg-wbm-greenMuted text-wbm-green border border-wbm-green/30">
-              Direto do MQTT / Postman
+            <span id="active-source-badge" class="px-2 py-0.5 text-[10px] font-bold uppercase rounded-md bg-wbm-greenMuted text-wbm-green border border-wbm-green/30">
+              Fonte: Lovable (Supabase)
             </span>
           </div>
           <div class="flex items-center gap-2 text-xs text-zinc-400 mt-0.5">
             <span id="sync-dot" class="w-2 h-2 rounded-full bg-wbm-green"></span>
-            <span id="sync-text">Conectando direto aos Brokers MQTT (AWS + ORACLE)...</span>
+            <span id="sync-text">Sincronizando com Lovable (WBM IoT Control)...</span>
           </div>
         </div>
       </div>
 
       <!-- Ações Principais do Topo -->
       <div class="flex flex-wrap items-center gap-2.5">
+        <!-- Seletor de Fonte (Auto: Lovable -> Postman) -->
+        <select
+          id="data-source-select"
+          onchange="setDataSourceMode(this.value)"
+          class="px-3 py-2.5 rounded-xl bg-wbm-surface border border-wbm-border text-xs font-semibold text-zinc-200 focus:outline-none focus:border-wbm-green"
+          title="Escolha a fonte de dados: Auto tenta Lovable primeiro e cai para Postman/MQTT se o Lovable parar"
+        >
+          <option value="auto">🔄 Auto (Lovable → Postman)</option>
+          <option value="lovable">🌐 Somente Lovable</option>
+          <option value="postman">📡 Somente Postman (MQTT)</option>
+        </select>
         <!-- Botão 1-Click Enviar Todos -->
         <button
           onclick="submitAllPriorityDevicesOneClick()"
@@ -592,6 +603,14 @@
       </div>
       <div class="space-y-4">
         <div>
+          <label class="block text-xs font-semibold text-zinc-300 mb-1.5">Usuário Lovable (E-mail)</label>
+          <input id="cfg-lovable-email" type="email" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border text-sm text-white focus:border-wbm-green focus:outline-none" />
+        </div>
+        <div>
+          <label class="block text-xs font-semibold text-zinc-300 mb-1.5">Senha Lovable</label>
+          <input id="cfg-lovable-password" type="password" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border text-sm text-white focus:border-wbm-green focus:outline-none" />
+        </div>
+        <div>
           <label class="block text-xs font-semibold text-zinc-300 mb-1.5">Usuário Broker MQTT (Postman)</label>
           <input id="cfg-email" type="text" class="w-full px-3.5 py-2.5 rounded-xl bg-wbm-black border border-wbm-border text-sm text-white focus:border-wbm-green focus:outline-none" />
         </div>
@@ -627,11 +646,15 @@
 
   <script>
 // ============================================================================
-// WBM IoT -> Google Forms Automation (100% Direto do MQTT / Postman, Sem Lovable)
+// WBM IoT -> Google Forms Automation (Modo Híbrido: Lovable + Fallback Postman/MQTT)
 // Inclui:
-//  1) Envio de Todos os Equipamentos em 1 Clique para o Google Forms
-//  2) Gerador de Relatório Técnico Mensal em PDF para Clientes (Gráfico Pizza + Tabelas)
+//  1) Fonte Primária: Lovable / Supabase (com Fallback Automático p/ MQTT Postman)
+//  2) Envio de Todos os Equipamentos em 1 Clique para o Google Forms
+//  3) Gerador de Relatório Técnico Mensal em PDF para Clientes (Gráfico Pizza + Tabelas)
 // ============================================================================
+
+const SUPABASE_URL = "https://nwdextnlntvixacrjifv.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im53ZGV4dG5sbnR2aXhhY3JqaWZ2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzA1MTQyNjQsImV4cCI6MjA4NjA5MDI2NH0.N3bGloWK1RWg6VXKgm2zXxfwOlKn8ubIIzIFSd24BNc";
 
 const MQTT_WS_URL = "ws://52.67.133.240:9001";
 const MQTT_USER = "wbm_technology";
@@ -998,6 +1021,11 @@ const DEFAULT_DEVICES = {
 };
 
 const state = {
+  dataSourceMode: localStorage.getItem("wbm_data_source") || "auto", // 'auto' | 'lovable' | 'postman'
+  activeSource: "lovable", // fonte ativa no momento ('lovable' | 'postman')
+  supabaseToken: null,
+  lovableEmail: localStorage.getItem("wbm_email") || "matheus.coutinho@wbmtechnology.com.br",
+  lovablePassword: localStorage.getItem("wbm_password") || "wbm_technology",
   responsavelPadrao: localStorage.getItem("wbm_responsavel") || "Matheus Coutinho",
   mqttWsUrl: localStorage.getItem("wbm_mqtt_ws") || MQTT_WS_URL,
   mqttUser: localStorage.getItem("wbm_mqtt_user") || MQTT_USER,
@@ -1084,8 +1112,233 @@ function rebuildDevicesArray() {
   }
 }
 
-async function loadAllDashboardData() {
-  setSyncStatus("loading", "Conectando direto ao Broker MQTT (Postman)...");
+function indexBy(arr, key) {
+  const map = {};
+  for (const item of arr || []) {
+    if (item && item[key]) map[item[key]] = item;
+  }
+  return map;
+}
+
+function setDataSourceMode(mode) {
+  state.dataSourceMode = mode;
+  localStorage.setItem("wbm_data_source", mode);
+  const sel = document.getElementById("data-source-select");
+  if (sel) sel.value = mode;
+  loadAllDashboardData();
+}
+
+function updateSourceBadgeUI() {
+  const badge = document.getElementById("active-source-badge");
+  if (!badge) return;
+  if (state.activeSource === "lovable") {
+    badge.textContent = "Fonte: Lovable (Supabase)";
+    badge.className = "px-2 py-0.5 text-[10px] font-bold uppercase rounded-md bg-wbm-greenMuted text-wbm-green border border-wbm-green/30";
+  } else {
+    badge.textContent = "Fonte: Postman (MQTT Direto)";
+    badge.className = "px-2 py-0.5 text-[10px] font-bold uppercase rounded-md bg-amber-500/15 text-amber-300 border border-amber-500/30";
+  }
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function supabaseLogin(email, password) {
+  const res = await fetchWithTimeout(`${SUPABASE_URL}/auth/v1/token?grant_type=password`, {
+    method: "POST",
+    headers: { apikey: SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password })
+  }, 8000);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error_description || err.msg || `HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  state.supabaseToken = data.access_token;
+  return data;
+}
+
+async function supabaseQuery(table, queryParams = "select=*") {
+  if (!state.supabaseToken) {
+    await supabaseLogin(state.lovableEmail, state.lovablePassword);
+  }
+  const res = await fetchWithTimeout(`${SUPABASE_URL}/rest/v1/${table}?${queryParams}`, {
+    headers: {
+      apikey: SUPABASE_ANON_KEY,
+      Authorization: `Bearer ${state.supabaseToken}`
+    }
+  }, 8000);
+  if (!res.ok) throw new Error(`Erro ${res.status} em ${table}`);
+  return await res.json();
+}
+
+function mapLovableDeviceToEntry(d, latestMaps, cfgMaps) {
+  const id = d.device_id;
+  const name = (d.name || id).trim();
+  const loc = (d.location || "").trim();
+  const sol = d.solution_code || "";
+
+  let cliente = "Outro";
+  let clienteOutro = loc || "WBM Cliente";
+  let equipamento = "Outro";
+  let equipamentoOutro = sol;
+  let identificacao = "Outro";
+  let identificacaoOutro = loc ? `${name} (${loc})` : name;
+  let priorityOrder = 50;
+  let isPriority = false;
+
+  if (sol === "control_parshall_monitor") { equipamento = "Control Parshall Monitor"; equipamentoOutro = ""; }
+  else if (sol === "control_flow_monitor") { equipamento = "Control Flow Gate"; equipamentoOutro = ""; }
+  else if (sol === "pressure_monitor") { equipamento = "Pressure Monitor"; equipamentoOutro = ""; }
+  else if (sol === "temp_monitor") { equipamento = "Temp Monitor"; equipamentoOutro = ""; }
+  else if (sol === "control_temp_humidity_monitor") { equipamento = "Temp Monitor"; equipamentoOutro = "Temp&Humid Monitor"; }
+  else if (sol === "energy_monitor") { equipamento = "Outro"; equipamentoOutro = "Monitor de Energia"; }
+  else if (sol === "inverter_monitor") { equipamento = "Outro"; equipamentoOutro = "Inverter Monitor"; }
+
+  if (id === "Mestre_CC7B5CF835BC_CP_1" || id === "Mestre_BCDDC2CDA9B8_CP_1") {
+    cliente = "UTA SAAE Itabirito Nascente"; clienteOutro = "";
+    equipamento = "Control Parshall Monitor";
+    identificacao = "ControlParshal 1 (NASCENTE ITABIRITO)"; identificacaoOutro = "";
+    priorityOrder = id === "Mestre_CC7B5CF835BC_CP_1" ? 3 : 12;
+    isPriority = id === "Mestre_CC7B5CF835BC_CP_1";
+  } else if (id === "Mestre_CC7B5CF20D9C_CF_1") {
+    cliente = "ETA SAAE Itabirito"; clienteOutro = "";
+    equipamento = "Control Flow Gate";
+    identificacao = "ControlFlow GATE 1  (ETA ITABIRITO)"; identificacaoOutro = "";
+    priorityOrder = 4; isPriority = true;
+  } else if (id === "Mestre_CC7B5CF20D9C_MP_1") {
+    cliente = "ETA SAAE Itabirito"; clienteOutro = "";
+    equipamento = "Pressure Monitor";
+    identificacao = "PressureMonitor 1 (ETA ITABIRITO)"; identificacaoOutro = "";
+    priorityOrder = 5; isPriority = true;
+  } else if (loc.toUpperCase().includes("VITAS") || name.toUpperCase().includes("VITAS")) {
+    cliente = "Outro"; clienteOutro = "VITAS UFMG";
+    identificacao = "Outro"; identificacaoOutro = `${name} (${loc || "VITAS UFMG"})`;
+    priorityOrder = 6; isPriority = true;
+  } else if (id === "Mestre_8813BF00922C_CM_1") {
+    cliente = "Outro"; clienteOutro = loc || "Área Limpa Inativadas";
+    identificacao = "Outro"; identificacaoOutro = `${name} (${loc})`;
+    priorityOrder = 9; isPriority = true;
+  } else if (d.status === "online") {
+    priorityOrder = 10; isPriority = true;
+  }
+
+  let latest = {};
+  if (sol === "control_parshall_monitor") {
+    const cp = latestMaps.parshall[id] || {};
+    const mv = latestMaps.mappedState[id]?.variables || {};
+    const dc = cfgMaps.device[id] || {};
+    latest = {
+      vazao: cp.vazao ?? mv.flow?.val ?? null,
+      lamina: cp.lamina ?? mv.water_sheet?.val ?? null,
+      tensao: cp.tensao ?? mv.voltage?.val ?? null,
+      temp: cp.temp ?? mv.temperature?.val ?? null,
+      error: cp.error ?? mv.error_code?.val ?? 0,
+      sleep: cp.sleep ?? dc.sleep ?? 120,
+      acordado: cp.acordado ?? dc.acordado ?? 60
+    };
+  } else if (sol === "control_flow_monitor") {
+    latest = latestMaps.controlflow[id] || {};
+  } else if (sol === "pressure_monitor") {
+    const mp = latestMaps.pressure[id] || {};
+    const pc = cfgMaps.pressure[id] || {};
+    latest = {
+      pressao: mp.pressao ?? null,
+      temp: mp.temp ?? null,
+      error: mp.error ?? 0,
+      unit: pc.pressure_unit || "bar",
+      min: pc.pressure_min ?? 0,
+      max: pc.pressure_max ?? 16
+    };
+  } else if (sol === "temp_monitor") {
+    const mv = latestMaps.mappedState[id]?.variables || {};
+    const leg = latestMaps.temp[id] || {};
+    latest = {
+      d1: mv.supply_voltage_v?.val ?? leg.tensao ?? leg.payload?.d1 ?? 15,
+      d2: mv.ambient_temperature_c?.val ?? leg.temp_local ?? leg.payload?.d2 ?? null,
+      d3: mv.freezer_temperature_c?.val ?? leg.temp_freezer ?? leg.payload?.d3 ?? null,
+      d4: mv.controller_temperature_c?.val ?? leg.payload?.d4 ?? null,
+      d5: mv.device_error_code?.val ?? leg.error ?? 0,
+      d9: mv.temperature_alert_limit_c?.val ?? leg.limite_temp_alerta ?? -50
+    };
+  } else if (sol === "control_temp_humidity_monitor") {
+    latest = latestMaps.cth[id] || {};
+  } else {
+    const mv = latestMaps.mappedState[id]?.variables || {};
+    for (const [k, obj] of Object.entries(mv)) {
+      if (obj && obj.val !== undefined && obj.val !== null) latest[k] = obj.val;
+    }
+  }
+
+  return {
+    device_id: id,
+    name,
+    location: loc,
+    solution_code: sol,
+    broker: "Lovable (Supabase)",
+    topic: `devices/${id}/telemetry`,
+    status: d.status || "online",
+    last_seen: d.last_seen,
+    priorityOrder,
+    isPriority,
+    formMapping: { cliente, clienteOutro, equipamento, equipamentoOutro, identificacao, identificacaoOutro },
+    latest
+  };
+}
+
+async function loadFromLovable() {
+  await supabaseLogin(state.lovableEmail, state.lovablePassword);
+  const [devices, cfLatest, cpLatest, mpLatest, tempLatest, cthLatest, mappedState, devCfg, mpCfg] = await Promise.all([
+    supabaseQuery("devices", "select=*&order=name.asc"),
+    supabaseQuery("controlflow_latest", "select=*"),
+    supabaseQuery("parshall_latest", "select=*"),
+    supabaseQuery("pressure_latest", "select=*"),
+    supabaseQuery("temp_latest", "select=*"),
+    supabaseQuery("cth_latest", "select=*"),
+    supabaseQuery("telemetry_latest_state", "select=*"),
+    supabaseQuery("device_config", "select=*"),
+    supabaseQuery("pressure_device_config", "select=*")
+  ]);
+
+  const latestMaps = {
+    controlflow: indexBy(cfLatest, "device_id"),
+    parshall: indexBy(cpLatest, "device_id"),
+    pressure: indexBy(mpLatest, "device_id"),
+    temp: indexBy(tempLatest, "device_id"),
+    cth: indexBy(cthLatest, "device_id"),
+    mappedState: indexBy(mappedState, "device_id")
+  };
+  const cfgMaps = {
+    device: indexBy(devCfg, "device_id"),
+    pressure: indexBy(mpCfg, "device_id")
+  };
+
+  for (const d of devices) {
+    if (d.device_id === "TEST_GENERIC_RETIRE_1") continue;
+    const entry = mapLovableDeviceToEntry(d, latestMaps, cfgMaps);
+    state.devicesMap[d.device_id] = entry;
+  }
+
+  state.activeSource = "lovable";
+  updateSourceBadgeUI();
+  persistDevicesCache();
+  rebuildDevicesArray();
+  if (state.selectedDeviceId && state.devicesMap[state.selectedDeviceId]) {
+    selectDevice(state.selectedDeviceId);
+  }
+  setSyncStatus("ok", `Lovable (Supabase) Online • ${devices.length} dispositivos sincronizados (${new Date().toLocaleTimeString("pt-BR")})`);
+}
+
+async function loadFromPostmanMqtt(isFallback = false) {
+  state.activeSource = "postman";
+  updateSourceBadgeUI();
 
   const endpoints = [];
   if (window.location.protocol.startsWith("http")) {
@@ -1094,26 +1347,52 @@ async function loadAllDashboardData() {
   }
   endpoints.push(LOCAL_BRIDGE_URL);
 
-  let loadedFromApi = false;
   for (const url of endpoints) {
     try {
       const res = await fetch(url, { cache: "no-store" });
       if (res.ok) {
         const snap = await res.json();
         applySnapshotData(snap);
-        loadedFromApi = true;
-        setSyncStatus("ok", `MQTT Direto Ativo (AWS + ORACLE) • Atualizado às ${new Date().toLocaleTimeString("pt-BR")}`);
+        setSyncStatus(
+          "ok",
+          isFallback
+            ? `⚠️ Lovable fora do ar — usando Postman (MQTT) automaticamente (${new Date().toLocaleTimeString("pt-BR")})`
+            : `Postman (MQTT Direto) Ativo • Atualizado às ${new Date().toLocaleTimeString("pt-BR")}`
+        );
         break;
       }
     } catch (_) {}
   }
 
-  // Se estiver em HTTP ou arquivo local, conecta também via WebSocket direto (ws://52.67.133.240:9001)
   if (window.location.protocol !== "https:") {
     connectBrowserMqtt();
   } else if (!window.__httpsPollingStarted) {
     window.__httpsPollingStarted = true;
-    setInterval(() => loadAllDashboardData(), 25000);
+    setInterval(() => {
+      if (state.activeSource === "postman") loadFromPostmanMqtt(false);
+    }, 25000);
+  }
+}
+
+async function loadAllDashboardData() {
+  if (state.dataSourceMode === "postman") {
+    setSyncStatus("loading", "Conectando direto ao Postman (MQTT)...");
+    await loadFromPostmanMqtt(false);
+    return;
+  }
+
+  setSyncStatus("loading", "Sincronizando com o Lovable (WBM IoT Control)...");
+  try {
+    await loadFromLovable();
+  } catch (err) {
+    console.warn("Lovable indisponível:", err.message);
+    if (state.dataSourceMode === "lovable") {
+      setSyncStatus("error", `Lovable offline: ${err.message}. Troque para 'Auto' ou 'Postman' no topo.`);
+      showToast("⚠️ Lovable fora do ar! Selecione 'Postman (MQTT)' ou 'Auto' no topo.");
+    } else {
+      showToast("⚠️ Lovable indisponível no momento — ativando Postman (MQTT) automaticamente!");
+      await loadFromPostmanMqtt(true);
+    }
   }
 }
 
@@ -1375,7 +1654,7 @@ function getNowForGoogleForms() {
   return `${y}-${m}-${d} ${hh}:${mm}`;
 }
 
-function buildReportForDevice(dev) {
+function buildReportForDevice(dev, historyStats = null) {
   const id = dev.device_id;
   const sol = dev.solution_code;
   const d = dev.latest || {};
@@ -1446,6 +1725,9 @@ function buildReportForDevice(dev) {
       `Nos parâmetros atuais do equipamento, registra-se vazão de ${fmtNum(vazao)} m³/h, lâmina d'água de ${fmtNum(lamina)} mm, ` +
       `temperatura de ${fmtNum(temp, 1)} °C e tensão da bateria em ${fmtNum(tensao)} V (ciclo configurado: Sleep ${sleep} min / Acordado ${acordado} s).`
     );
+    if (historyStats && historyStats.count > 0) {
+      resumoParts.push(`Nas últimas 24h (${historyStats.count} leituras no Lovable), a vazão média foi de ${fmtNum(historyStats.avg)} m³/h (mín: ${fmtNum(historyStats.min)} | máx: ${fmtNum(historyStats.max)} m³/h).`);
+    }
     obsParts.push(
       tensao !== null && tensao < 11.0
         ? `Atenção: Tensão da bateria em ${fmtNum(tensao)} V (abaixo de 11,0 V). Acompanhar curva de descarga.`
@@ -1496,6 +1778,9 @@ function buildReportForDevice(dev) {
       `A transmissão de dados permanece ativa e regular, com a última leitura registrada ${horaLeitura}. ` +
       `Nos dados atuais do equipamento, registra-se pressão de ${fmtNum(pressao)} ${unit} (faixa operacional de ${pMin} a ${pMax} ${unit}), temperatura local de ${fmtNum(temp, 1)} °C e código de erro ${err}.`
     );
+    if (historyStats && historyStats.count > 0) {
+      resumoParts.push(`Nas últimas 24h (${historyStats.count} leituras no Lovable), a pressão média foi de ${fmtNum(historyStats.avg)} ${unit} (mín: ${fmtNum(historyStats.min)} | máx: ${fmtNum(historyStats.max)} ${unit}).`);
+    }
     obsParts.push("Pressão da linha estável e dentro dos limites operacionais.");
   } else if (sol === "temp_monitor") {
     const tFreezer = d.temp_freezer ?? d.d3 ?? d.payload?.d3 ?? null;
@@ -1520,6 +1805,9 @@ function buildReportForDevice(dev) {
       `Nos dados atuais do equipamento, registra-se temperatura interna do freezer em ${fmtNum(tFreezer, 1)} °C (limite de alerta: ${limitC} °C), ` +
       `temperatura do controlador em ${fmtNum(tCtrl, 1)} °C, temperatura ambiente de ${fmtNum(tAmb, 1)} °C e alimentação em ${vcc} V.`
     );
+    if (historyStats && historyStats.count > 0) {
+      resumoParts.push(`Nas últimas 24h (${historyStats.count} leituras no Lovable), a temperatura do freezer teve média de ${fmtNum(historyStats.avg, 1)} °C (mín: ${fmtNum(historyStats.min, 1)} | máx: ${fmtNum(historyStats.max, 1)} °C).`);
+    }
     obsParts.push(
       tempHigh
         ? `Atenção: Temperatura (${fmtNum(tFreezer, 1)} °C) acima do limite configurado (${limitC} °C).`
@@ -2451,15 +2739,48 @@ function renderDeviceList() {
   }).join("");
 }
 
-function selectDevice(deviceId) {
+async function fetch24hStatsForDevice(dev) {
+  if (!dev || state.activeSource !== "lovable" || dev.device_id.startsWith("ALIMENTADOR_")) return null;
+  const id = dev.device_id;
+  const sol = dev.solution_code;
+  const sinceIso = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+
+  try {
+    if (sol === "control_parshall_monitor") {
+      const rows = await supabaseQuery("parshall_history", `select=vazao&device_id=eq.${encodeURIComponent(id)}&received_at=gte.${encodeURIComponent(sinceIso)}&limit=500`);
+      const vals = rows.map(r => Number(r.vazao)).filter(v => !Number.isNaN(v));
+      if (vals.length > 0) return { count: vals.length, min: Math.min(...vals), max: Math.max(...vals), avg: vals.reduce((a, b) => a + b, 0) / vals.length };
+    } else if (sol === "pressure_monitor") {
+      const rows = await supabaseQuery("pressure_history", `select=pressao&device_id=eq.${encodeURIComponent(id)}&received_at=gte.${encodeURIComponent(sinceIso)}&limit=500`);
+      const vals = rows.map(r => Number(r.pressao)).filter(v => !Number.isNaN(v));
+      if (vals.length > 0) return { count: vals.length, min: Math.min(...vals), max: Math.max(...vals), avg: vals.reduce((a, b) => a + b, 0) / vals.length };
+    } else if (sol === "temp_monitor") {
+      const rows = await supabaseQuery("temp_history", `select=temp_freezer,raw_payload&device_id=eq.${encodeURIComponent(id)}&received_at=gte.${encodeURIComponent(sinceIso)}&limit=500`);
+      const vals = rows.map(r => r.temp_freezer ?? r.raw_payload?.d3 ?? r.raw_payload?.payload?.d3).map(Number).filter(v => !Number.isNaN(v) && v > -200);
+      if (vals.length > 0) return { count: vals.length, min: Math.min(...vals), max: Math.max(...vals), avg: vals.reduce((a, b) => a + b, 0) / vals.length };
+    }
+  } catch (_) {}
+  return null;
+}
+
+async function selectDevice(deviceId) {
   state.selectedDeviceId = deviceId;
   const dev = state.devicesMap[deviceId];
   if (!dev) return;
 
   renderDeviceList();
-  const report = buildReportForDevice(dev);
+  let report = buildReportForDevice(dev, null);
   state.generatedReports[deviceId] = report;
   populateFormUI(dev, report);
+
+  if (state.activeSource === "lovable") {
+    const stats24h = await fetch24hStatsForDevice(dev);
+    if (stats24h && state.selectedDeviceId === deviceId) {
+      report = buildReportForDevice(dev, stats24h);
+      state.generatedReports[deviceId] = report;
+      populateFormUI(dev, report);
+    }
+  }
 }
 
 function populateFormUI(dev, report) {
@@ -2768,6 +3089,8 @@ function closeBatchModal() {
 }
 
 function openSettingsModal() {
+  document.getElementById("cfg-lovable-email").value = state.lovableEmail;
+  document.getElementById("cfg-lovable-password").value = state.lovablePassword;
   document.getElementById("cfg-email").value = state.mqttUser;
   document.getElementById("cfg-password").value = state.mqttPass;
   document.getElementById("cfg-responsavel").value = state.responsavelPadrao;
@@ -2779,17 +3102,22 @@ function closeSettingsModal() {
 }
 
 async function saveCredentialsSettings() {
+  state.lovableEmail = document.getElementById("cfg-lovable-email").value.trim() || state.lovableEmail;
+  state.lovablePassword = document.getElementById("cfg-lovable-password").value || state.lovablePassword;
   state.mqttUser = document.getElementById("cfg-email").value.trim() || MQTT_USER;
   state.mqttPass = document.getElementById("cfg-password").value || MQTT_PASS;
   state.responsavelPadrao = document.getElementById("cfg-responsavel").value;
 
+  localStorage.setItem("wbm_email", state.lovableEmail);
+  localStorage.setItem("wbm_password", state.lovablePassword);
   localStorage.setItem("wbm_mqtt_user", state.mqttUser);
   localStorage.setItem("wbm_mqtt_pass", state.mqttPass);
   localStorage.setItem("wbm_responsavel", state.responsavelPadrao);
+  state.supabaseToken = null;
 
   closeSettingsModal();
   await loadAllDashboardData();
-  showToast("Configurações MQTT salvas!");
+  showToast("Configurações salvas e dados recarregados!");
 }
 
 function escapeHtml(str) {
@@ -2813,6 +3141,10 @@ function showToast(msg) {
 }
 
 window.addEventListener("DOMContentLoaded", () => {
+  const dsSel = document.getElementById("data-source-select");
+  if (dsSel) dsSel.value = state.dataSourceMode;
+  updateSourceBadgeUI();
+
   initDevicesFromStorage();
   initBotScheduler();
   loadAllDashboardData();
