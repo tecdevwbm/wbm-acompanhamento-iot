@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-11-19T00:11:03.940Z",
+  "updated_at": "2026-11-19T10:08:13.748Z",
   "devices": {
     "ALIMENTADOR_1": {
       "device_id": "ALIMENTADOR_1",
@@ -469,7 +469,7 @@
       "broker": "ORACLE",
       "topic": "devices/Mestre_8813BF00CDB0_ML_1/telemetry",
       "status": "online",
-      "last_seen": "2026-11-16T20:59:32.696203+00:00",
+      "last_seen": "2026-11-19T10:08:13.748Z",
       "priorityOrder": 30,
       "isPriority": false,
       "formMapping": {
@@ -483,9 +483,9 @@
       "latest": {
         "deviceId": "Mestre_8813BF00CDB0_ML_1",
         "ed": 1,
-        "nivel": 43.84813,
-        "dist": 16.15187,
-        "stMotor": 2,
+        "nivel": 13.74989,
+        "dist": 46.25011,
+        "stMotor": 3,
         "error": 0
       },
       "history24h": []
@@ -2806,6 +2806,20 @@
     }
   },
   "recent_log": [
+    {
+      "ts": "2026-11-19T10:08:13.748Z",
+      "broker": "ORACLE",
+      "topic": "devices/Mestre_8813BF00CDB0_ML_1/telemetry",
+      "payload": {
+        "deviceId": "Mestre_8813BF00CDB0_ML_1",
+        "ed": 1,
+        "nivel": 13.74989,
+        "dist": 46.25011,
+        "stMotor": 3,
+        "error": 0
+      },
+      "retain": false
+    },
     {
       "ts": "2026-11-16T20:59:32.696203+00:00",
       "broker": "ORACLE",
