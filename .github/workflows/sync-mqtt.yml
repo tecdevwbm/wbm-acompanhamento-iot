@@ -1,16 +1,21 @@
-name: Atualizar Snapshot MQTT (AWS + ORACLE)
+name: Robô Diário (08:15) e Snapshot MQTT
 
 on:
   schedule:
-    - cron: '10 11 * * 1-5'   # 08:10 BRT (Seg a Sex - 5 min antes do alerta das 08:15!)
-    - cron: '0 */2 * * *'     # A cada 2 horas
+    - cron: '15 11 * * 1-5'   # 08:15 BRT (Segunda a Sexta) - Envio Automático para Google Forms
+    - cron: '0 */2 * * *'     # A cada 2 horas - Apenas atualiza snapshot MQTT
   workflow_dispatch:
+    inputs:
+      auto_submit_forms:
+        description: 'Enviar acompanhamentos ao Google Forms agora? (true/false)'
+        required: false
+        default: 'true'
 
 permissions:
   contents: write
 
 jobs:
-  sync-mqtt:
+  sync-and-submit:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -42,9 +47,13 @@ jobs:
             fn({method:'GET'}, res);
           "
 
-      - name: Salvar Snapshot Atualizado
+      - name: Executar Robô Automático das 08:15 (Seg-Sex) -> Google Forms
+        if: github.event.schedule == '15 11 * * 1-5' || (github.event_name == 'workflow_dispatch' && inputs.auto_submit_forms == 'true')
+        run: node ./scripts/auto_submit_forms.js
+
+      - name: Salvar Snapshot e Histórico da Nuvem
         run: |
           git config user.name "WBM MQTT Bot"
           git config user.email "tecnico2@wbmtechnology.com.br"
-          git add webapp/mqtt_snapshot.json
-          git diff --staged --quiet || (git commit -m "chore: atualizar telemetria MQTT" && git push)
+          git add webapp/mqtt_snapshot.json webapp/cloud_submissions_history.json
+          git diff --staged --quiet || (git commit -m "chore: snapshot MQTT e envio automático 08:15" && git push)

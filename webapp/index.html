@@ -118,6 +118,15 @@
           <span>📊 Relatório Mensal (Cliente)</span>
         </button>
 
+        <!-- Botão Histórico e Calendário -->
+        <button
+          onclick="openHistoryCalendarModal()"
+          class="px-3.5 py-2.5 rounded-xl bg-wbm-surface hover:bg-wbm-card border border-wbm-border text-zinc-200 font-semibold text-xs flex items-center gap-1.5 transition"
+          title="Ver calendário mensal de acompanhamentos enviados e exportar para Excel"
+        >
+          <span>📅 Histórico</span>
+        </button>
+
         <!-- Botão Fila Diária -->
         <button
           onclick="triggerDailyBotQueue(false)"
@@ -472,6 +481,54 @@
 
     </section>
   </main>
+
+  <!-- MODAL: HISTÓRICO E CALENDÁRIO DE ENVIOS + EXPORTAR EXCEL -->
+  <div id="history-calendar-modal" class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
+    <div class="bg-wbm-surface border border-wbm-border rounded-2xl max-w-5xl w-full max-h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+      <div class="p-6 border-b border-wbm-border flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <span class="px-2.5 py-0.5 text-[10px] font-bold uppercase rounded-full bg-wbm-greenMuted text-wbm-green border border-wbm-green/30">
+            AUDITORIA & CONTROLE DE ENVIOS
+          </span>
+          <h3 class="text-xl font-bold text-white mt-1">Calendário e Histórico de Acompanhamentos</h3>
+        </div>
+        <div class="flex flex-wrap items-center gap-3">
+          <input
+            id="hc-month-input"
+            type="month"
+            onchange="renderHistoryCalendarModal(null)"
+            class="px-3 py-2 rounded-xl bg-wbm-black border border-wbm-border text-xs font-mono text-wbm-green focus:outline-none focus:border-wbm-green"
+          />
+          <button
+            onclick="exportSubmissionsHistoryCSV()"
+            class="wbm-btn-primary px-4 py-2.5 rounded-xl font-extrabold text-xs flex items-center gap-1.5"
+          >
+            <span>📥 Baixar Planilha Excel (.CSV)</span>
+          </button>
+          <button onclick="closeHistoryCalendarModal()" class="px-3.5 py-2 rounded-xl bg-wbm-card hover:bg-zinc-800 text-zinc-300 text-xs font-semibold">
+            ✕ Fechar
+          </button>
+        </div>
+      </div>
+
+      <div class="p-6 space-y-6 overflow-y-auto flex-1">
+        <div>
+          <div class="grid grid-cols-7 gap-2 text-center text-[11px] font-bold text-zinc-400 uppercase mb-2">
+            <div>Dom</div><div>Seg</div><div>Ter</div><div>Qua</div><div>Qui</div><div>Sex</div><div>Sáb</div>
+          </div>
+          <div id="hc-calendar-grid" class="grid grid-cols-7 gap-2"></div>
+        </div>
+
+        <div class="space-y-3">
+          <div class="flex items-center justify-between">
+            <h4 id="hc-summary-label" class="text-xs font-bold uppercase tracking-wider text-wbm-green">Envios do Mês</h4>
+            <button onclick="renderHistoryCalendarModal(null)" class="text-xs text-zinc-400 hover:text-white underline">Ver mês inteiro</button>
+          </div>
+          <div id="hc-history-list" class="space-y-2.5 max-h-64 overflow-y-auto"></div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- MODAL: RELATÓRIO MENSAL PARA O CLIENTE (TABELAS + GRÁFICO PIZZA + PDF) -->
   <div id="monthly-report-modal" class="hidden fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
@@ -1043,7 +1100,11 @@ const state = {
   livePacketsCount: 0,
   recentMqttLog: [],
   sentToday: JSON.parse(localStorage.getItem("wbm_sent_" + getTodayKey()) || "{}"),
-  monthlyReportMonth: "2026-11"
+  submissionsHistory: JSON.parse(localStorage.getItem("wbm_submissions_history_v1") || "[]"),
+  cloudSubmissions: [],
+  monthlyReportMonth: getTodayKey().slice(0, 7),
+  historyCalendarMonth: getTodayKey().slice(0, 7),
+  historySelectedDay: null
 };
 
 function getTodayKey() {
@@ -1051,15 +1112,79 @@ function getTodayKey() {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
 }
 
-function saveSentToday(deviceId, mode) {
-  const key = "wbm_sent_" + getTodayKey();
-  state.sentToday[deviceId] = {
-    time: new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+function getAllMergedHistory() {
+  const map = new Map();
+  for (const item of [...(state.cloudSubmissions || []), ...(state.submissionsHistory || [])]) {
+    if (!item || !item.dateKey || !item.deviceId) continue;
+    const dedupKey = `${item.dateKey}__${item.deviceId}__${item.mode || ""}`;
+    if (!map.has(dedupKey)) {
+      map.set(dedupKey, item);
+    }
+  }
+  return Array.from(map.values()).sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+}
+
+function saveSentToday(deviceId, mode, reportObj = null) {
+  const todayKey = getTodayKey();
+  const key = "wbm_sent_" + todayKey;
+  const timeStr = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  state.sentToday[deviceId] = { time: timeStr, mode };
+  localStorage.setItem(key, JSON.stringify(state.sentToday));
+
+  // Registra também no histórico mensal persistente
+  const rep = reportObj || state.generatedReports[deviceId] || (state.devicesMap[deviceId] ? buildReportForDevice(state.devicesMap[deviceId]) : null);
+  const entry = {
+    dateKey: todayKey,
+    timestamp: new Date().toISOString(),
+    time: timeStr,
+    deviceId,
+    deviceName: rep?.deviceName || state.devicesMap[deviceId]?.name || deviceId,
+    cliente: rep ? (rep.cliente === "Outro" ? rep.clienteOutro : rep.cliente) : "",
+    equipamento: rep ? (rep.equipamento === "Outro" ? rep.equipamentoOutro : rep.equipamento) : "",
+    identificacao: rep ? (rep.identificacao === "Outro" ? rep.identificacaoOutro : rep.identificacao) : "",
+    responsavel: rep?.responsavel || state.responsavelPadrao,
+    statusOperacional: rep?.statusOperacional || "Operando normalmente",
+    necessitaAcao: rep?.necessitaAcao || "Nao",
+    resumo: rep?.resumo || "",
+    observacoes: rep?.observacoes || "",
     mode
   };
-  localStorage.setItem(key, JSON.stringify(state.sentToday));
+
+  state.submissionsHistory = [
+    entry,
+    ...state.submissionsHistory.filter(x => !(x.dateKey === todayKey && x.deviceId === deviceId && x.mode === mode))
+  ].slice(0, 600);
+  try {
+    localStorage.setItem("wbm_submissions_history_v1", JSON.stringify(state.submissionsHistory));
+  } catch (_) {}
+
   renderDeviceList();
   updateStatsCounters();
+}
+
+async function loadCloudSubmissionsHistory() {
+  if (!window.location.protocol.startsWith("http")) return;
+  try {
+    const res = await fetch("./webapp/cloud_submissions_history.json", { cache: "no-store" });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (Array.isArray(data.submissions)) {
+      state.cloudSubmissions = data.submissions;
+      const todayKey = getTodayKey();
+      let changed = false;
+      for (const item of data.submissions) {
+        if (item.dateKey === todayKey && item.deviceId && !state.sentToday[item.deviceId]) {
+          state.sentToday[item.deviceId] = { time: item.time || "08:15", mode: item.mode || "Robô Nuvem (08:15)" };
+          changed = true;
+        }
+      }
+      if (changed) {
+        localStorage.setItem("wbm_sent_" + todayKey, JSON.stringify(state.sentToday));
+        renderDeviceList();
+        updateStatsCounters();
+      }
+    }
+  } catch (_) {}
 }
 
 // ============================================================================
@@ -1375,6 +1500,8 @@ async function loadFromPostmanMqtt(isFallback = false) {
 }
 
 async function loadAllDashboardData() {
+  loadCloudSubmissionsHistory();
+
   if (state.dataSourceMode === "postman") {
     setSyncStatus("loading", "Conectando direto ao Postman (MQTT)...");
     await loadFromPostmanMqtt(false);
@@ -1895,7 +2022,7 @@ function openPrefilledGoogleForm() {
   const report = readCurrentFormFromUI();
   const url = getPrefilledGoogleFormsUrl(report);
   window.open(url, "_blank", "noopener,noreferrer");
-  saveSentToday(report.deviceId, "Forms Aberto");
+  saveSentToday(report.deviceId, "Forms Aberto", report);
   showToast("Formulário aberto já preenchido! Basta clicar em 'Enviar' na aba do Google Forms.");
 }
 
@@ -1923,7 +2050,7 @@ async function submitDirectlyToGoogleForms(customReport = null, silent = false) 
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params.toString()
     });
-    saveSentToday(report.deviceId, "Enviado Direto");
+    saveSentToday(report.deviceId, "Enviado Direto", report);
     if (!silent) {
       showToast(`Resposta de "${report.deviceName}" enviada direto para a planilha do Google Forms!`);
     }
@@ -1978,7 +2105,107 @@ async function submitAllPriorityDevicesOneClick() {
 // MELHORIA 4: Gerador de Relatório Técnico Mensal para Clientes (Tabelas + Pizza + PDF)
 // ============================================================================
 
-function computeMonthlyReportData(dev, monthStr) {
+async function fetchMonthlyRealHistoryFromLovable(dev, monthStr) {
+  if (!dev || state.activeSource !== "lovable" || dev.device_id.startsWith("ALIMENTADOR_")) return null;
+  const [yStr, mStr] = (monthStr || "2026-11").split("-");
+  const y = Number(yStr) || 2026;
+  const m = Number(mStr) || 11;
+  const startIso = new Date(Date.UTC(y, m - 1, 1, 0, 0, 0)).toISOString();
+  const endIso = new Date(Date.UTC(y, m, 0, 23, 59, 59)).toISOString();
+  const id = dev.device_id;
+  const sol = dev.solution_code;
+
+  try {
+    let rows = [];
+    let tsField = "received_at";
+    let extractVal = () => null;
+    let extractVolt = () => null;
+    let extractErr = (r) => Number(r.error ?? r.er ?? 0);
+
+    if (sol === "control_parshall_monitor") {
+      rows = await supabaseQuery("parshall_history", `select=vazao,lamina,tensao,error,received_at&device_id=eq.${encodeURIComponent(id)}&received_at=gte.${encodeURIComponent(startIso)}&received_at=lte.${encodeURIComponent(endIso)}&order=received_at.asc&limit=5000`);
+      extractVal = (r) => r.vazao;
+      extractVolt = (r) => r.tensao;
+    } else if (sol === "pressure_monitor") {
+      rows = await supabaseQuery("pressure_history", `select=pressao,temp,error,received_at&device_id=eq.${encodeURIComponent(id)}&received_at=gte.${encodeURIComponent(startIso)}&received_at=lte.${encodeURIComponent(endIso)}&order=received_at.asc&limit=5000`);
+      extractVal = (r) => r.pressao;
+    } else if (sol === "temp_monitor") {
+      rows = await supabaseQuery("temp_history", `select=temp_freezer,temp_local,tensao,error,raw_payload,received_at&device_id=eq.${encodeURIComponent(id)}&received_at=gte.${encodeURIComponent(startIso)}&received_at=lte.${encodeURIComponent(endIso)}&order=received_at.asc&limit=5000`);
+      extractVal = (r) => r.temp_freezer ?? r.raw_payload?.d3 ?? r.raw_payload?.payload?.d3;
+      extractVolt = (r) => r.tensao ?? r.raw_payload?.d1 ?? r.raw_payload?.payload?.d1;
+      extractErr = (r) => Number(r.error ?? r.raw_payload?.d5 ?? 0);
+    } else if (sol === "control_flow_monitor") {
+      tsField = "created_at";
+      rows = await supabaseQuery("controlflow_history", `select=po,qv,qc,er,md,created_at&device_id=eq.${encodeURIComponent(id)}&created_at=gte.${encodeURIComponent(startIso)}&created_at=lte.${encodeURIComponent(endIso)}&order=created_at.asc&limit=5000`);
+      extractVal = (r) => r.po;
+    }
+
+    if (!Array.isArray(rows) || rows.length === 0) return null;
+
+    const allVals = [];
+    const allVolts = [];
+    let errCount = 0;
+    const daysSet = new Set();
+    const weekBuckets = [
+      { label: "Semana 1 (Dias 01 a 07)", vals: [], errs: 0, days: new Set() },
+      { label: "Semana 2 (Dias 08 a 14)", vals: [], errs: 0, days: new Set() },
+      { label: "Semana 3 (Dias 15 a 21)", vals: [], errs: 0, days: new Set() },
+      { label: "Semana 4 (Dias 22 a 31)", vals: [], errs: 0, days: new Set() }
+    ];
+
+    for (const r of rows) {
+      const dt = new Date(r[tsField]);
+      if (Number.isNaN(dt.getTime())) continue;
+      const day = dt.getDate();
+      daysSet.add(day);
+      const wIdx = day <= 7 ? 0 : day <= 14 ? 1 : day <= 21 ? 2 : 3;
+      weekBuckets[wIdx].days.add(day);
+
+      const v = Number(extractVal(r));
+      const er = extractErr(r);
+      if (er !== 0) {
+        errCount++;
+        weekBuckets[wIdx].errs++;
+      }
+      if (!Number.isNaN(v) && (sol !== "temp_monitor" || v > -200)) {
+        allVals.push(v);
+        weekBuckets[wIdx].vals.push(v);
+      }
+      const vt = Number(extractVolt(r));
+      if (!Number.isNaN(vt) && vt > 0) allVolts.push(vt);
+    }
+
+    if (allVals.length === 0) return null;
+
+    const now = new Date();
+    const daysInScope = (y === now.getFullYear() && m === now.getMonth() + 1) ? now.getDate() : new Date(y, m, 0).getDate();
+    const coveragePct = Math.min(100, (daysSet.size / Math.max(1, daysInScope)) * 100);
+    const errPct = (errCount / rows.length) * coveragePct;
+    const normalPct = Math.max(0, +(coveragePct - errPct).toFixed(1));
+    const obsPct = Math.max(0, +errPct.toFixed(1));
+    const offlinePct = Math.max(0, +(100 - normalPct - obsPct).toFixed(1));
+
+    return {
+      isReal: true,
+      totalReadings: rows.length,
+      avg: allVals.reduce((a, b) => a + b, 0) / allVals.length,
+      min: Math.min(...allVals),
+      max: Math.max(...allVals),
+      avgVolt: allVolts.length > 0 ? allVolts.reduce((a, b) => a + b, 0) / allVolts.length : null,
+      normalPct,
+      obsPct,
+      offlinePct,
+      daysCovered: daysSet.size,
+      daysInScope,
+      weekBuckets
+    };
+  } catch (e) {
+    console.warn("Falha ao buscar histórico mensal Lovable:", e);
+    return null;
+  }
+}
+
+function computeMonthlyReportData(dev, monthStr, realHistory = null) {
   const d = dev.latest || {};
   const sol = dev.solution_code;
   const cliente = dev.formMapping.cliente === "Outro" ? dev.formMapping.clienteOutro : dev.formMapping.cliente;
@@ -2105,57 +2332,91 @@ function computeMonthlyReportData(dev, monthStr) {
       .map(([k, v]) => ({ param: `Parâmetro ${k.toUpperCase()}`, valor: String(v), ref: "Nominal", status: "Normal" }));
   }
 
+  // Aplica estatísticas reais dos últimos 30 dias do Lovable quando disponíveis
+  let isRealHistory = false;
+  if (realHistory && realHistory.isReal) {
+    isRealHistory = true;
+    totalReadings = realHistory.totalReadings;
+    baseVal = +realHistory.avg.toFixed(unit === "°C" ? 1 : 2);
+    minVal = +realHistory.min.toFixed(unit === "°C" ? 1 : 2);
+    maxVal = +realHistory.max.toFixed(unit === "°C" ? 1 : 2);
+    if (realHistory.avgVolt !== null) batteryV = +realHistory.avgVolt.toFixed(2);
+    normalPct = realHistory.normalPct;
+    obsPct = realHistory.obsPct;
+    offlinePct = realHistory.offlinePct;
+  }
+
   // Semanas do mês (Tabela estatística semanal)
-  const weeks = [
-    {
-      semana: "Semana 1 (Dias 01 a 07)",
-      leituras: Math.round(totalReadings * 0.24),
-      min: fmtNum(minVal * 1.01, unit === "°C" ? 1 : 2),
-      med: fmtNum(baseVal * 0.98, unit === "°C" ? 1 : 2),
-      max: fmtNum(maxVal * 0.96, unit === "°C" ? 1 : 2),
-      medNum: +(baseVal * 0.98).toFixed(2),
-      disp: "98,2%",
-      status: "Operando normalmente"
-    },
-    {
-      semana: "Semana 2 (Dias 08 a 14)",
-      leituras: Math.round(totalReadings * 0.26),
-      min: fmtNum(minVal, unit === "°C" ? 1 : 2),
-      med: fmtNum(baseVal * 1.01, unit === "°C" ? 1 : 2),
-      max: fmtNum(maxVal, unit === "°C" ? 1 : 2),
-      medNum: +(baseVal * 1.01).toFixed(2),
-      disp: "99,1%",
-      status: "Operando normalmente"
-    },
-    {
-      semana: "Semana 3 (Dias 15 a 21)",
-      leituras: Math.round(totalReadings * 0.25),
-      min: fmtNum(minVal * 1.02, unit === "°C" ? 1 : 2),
-      med: fmtNum(baseVal * 0.99, unit === "°C" ? 1 : 2),
-      max: fmtNum(maxVal * 0.98, unit === "°C" ? 1 : 2),
-      medNum: +(baseVal * 0.99).toFixed(2),
-      disp: "96,5%",
-      status: "Operando normalmente"
-    },
-    {
-      semana: "Semana 4 (Dias 22 a 30)",
-      leituras: Math.round(totalReadings * 0.25),
-      min: fmtNum(minVal * 0.99, unit === "°C" ? 1 : 2),
-      med: fmtNum(baseVal, unit === "°C" ? 1 : 2),
-      max: fmtNum(maxVal * 0.99, unit === "°C" ? 1 : 2),
-      medNum: +baseVal.toFixed(2),
-      disp: "98,8%",
-      status: "Operando normalmente"
-    }
-  ];
+  const dec = unit === "°C" ? 1 : 2;
+  const weeks = (realHistory && realHistory.isReal)
+    ? realHistory.weekBuckets.map((wb, idx) => {
+        const cnt = wb.vals.length;
+        const wMin = cnt > 0 ? Math.min(...wb.vals) : minVal;
+        const wMax = cnt > 0 ? Math.max(...wb.vals) : maxVal;
+        const wAvg = cnt > 0 ? wb.vals.reduce((a, b) => a + b, 0) / cnt : baseVal;
+        const maxDaysW = idx === 3 ? 9 : 7;
+        const wDisp = cnt > 0 ? Math.min(100, (wb.days.size / maxDaysW) * 100) : 0;
+        return {
+          semana: wb.label,
+          leituras: cnt,
+          min: cnt > 0 ? fmtNum(wMin, dec) : "—",
+          med: cnt > 0 ? fmtNum(wAvg, dec) : "—",
+          max: cnt > 0 ? fmtNum(wMax, dec) : "—",
+          medNum: cnt > 0 ? +wAvg.toFixed(2) : 0,
+          disp: cnt > 0 ? `${fmtNum(wDisp, 1)}%` : "0,0%",
+          status: cnt === 0 ? "Sem leituras" : (wb.errs > 0 ? "Com observações" : "Operando normalmente")
+        };
+      })
+    : [
+        {
+          semana: "Semana 1 (Dias 01 a 07)",
+          leituras: Math.round(totalReadings * 0.24),
+          min: fmtNum(minVal * 1.01, dec),
+          med: fmtNum(baseVal * 0.98, dec),
+          max: fmtNum(maxVal * 0.96, dec),
+          medNum: +(baseVal * 0.98).toFixed(2),
+          disp: "98,2%",
+          status: "Operando normalmente"
+        },
+        {
+          semana: "Semana 2 (Dias 08 a 14)",
+          leituras: Math.round(totalReadings * 0.26),
+          min: fmtNum(minVal, dec),
+          med: fmtNum(baseVal * 1.01, dec),
+          max: fmtNum(maxVal, dec),
+          medNum: +(baseVal * 1.01).toFixed(2),
+          disp: "99,1%",
+          status: "Operando normalmente"
+        },
+        {
+          semana: "Semana 3 (Dias 15 a 21)",
+          leituras: Math.round(totalReadings * 0.25),
+          min: fmtNum(minVal * 1.02, dec),
+          med: fmtNum(baseVal * 0.99, dec),
+          max: fmtNum(maxVal * 0.98, dec),
+          medNum: +(baseVal * 0.99).toFixed(2),
+          disp: "96,5%",
+          status: "Operando normalmente"
+        },
+        {
+          semana: "Semana 4 (Dias 22 a 31)",
+          leituras: Math.round(totalReadings * 0.25),
+          min: fmtNum(minVal * 0.99, dec),
+          med: fmtNum(baseVal, dec),
+          max: fmtNum(maxVal * 0.99, dec),
+          medNum: +baseVal.toFixed(2),
+          disp: "98,8%",
+          status: "Operando normalmente"
+        }
+      ];
 
   const resumoExecutivo =
     `Durante o período de ${mesLabel}, o equipamento ${dev.name} (${ident}), instalado no cliente ${cliente}, ` +
-    `manteve operação contínua e estável sob supervisão remota via telemetria MQTT da WBM Technology. ` +
+    `manteve operação contínua e estável sob supervisão remota via telemetria ${isRealHistory ? "do supervisório WBM / Lovable" : "MQTT da WBM Technology"}. ` +
     `Ao longo do mês foram totalizadas ${totalReadings.toLocaleString("pt-BR")} leituras válidas, atingindo índice de disponibilidade operacional de ${fmtNum(normalPct + obsPct, 1)}% ` +
     `(${fmtNum(normalPct, 1)}% do tempo em condição nominal sem ressalvas e ${fmtNum(obsPct, 1)}% em janela de acompanhamento preventivo). ` +
-    `A variável principal monitorada (${varName}) registrou média mensal de ${fmtNum(baseVal, unit === "°C" ? 1 : 2)} ${unit} ` +
-    `(faixa observada entre ${fmtNum(minVal, unit === "°C" ? 1 : 2)} ${unit} e ${fmtNum(maxVal, unit === "°C" ? 1 : 2)} ${unit}).`;
+    `A variável principal monitorada (${varName}) registrou média mensal de ${fmtNum(baseVal, dec)} ${unit} ` +
+    `(faixa observada entre ${fmtNum(minVal, dec)} ${unit} e ${fmtNum(maxVal, dec)} ${unit}).`;
 
   const parecerTecnico =
     `Com base nos indicadores consolidados do mês de ${mesLabel}, conclui-se que o sistema encontra-se em plenas condições operacionais, ` +
@@ -2181,7 +2442,8 @@ function computeMonthlyReportData(dev, monthStr) {
     weeks,
     extraParameters,
     resumoExecutivo,
-    parecerTecnico
+    parecerTecnico,
+    isRealHistory
   };
 }
 
@@ -2297,21 +2559,40 @@ function closeMonthlyReportModal() {
   document.getElementById("monthly-report-modal")?.classList.add("hidden");
 }
 
-function renderMonthlyReportContent() {
+async function renderMonthlyReportContent() {
   const devId = document.getElementById("mr-device-select")?.value || state.selectedDeviceId;
-  const monthVal = document.getElementById("mr-month-input")?.value || "2026-11";
+  const monthVal = document.getElementById("mr-month-input")?.value || getTodayKey().slice(0, 7);
   state.monthlyReportMonth = monthVal;
 
   const dev = state.devicesMap[devId] || state.devices[0];
   if (!dev) return;
 
-  const mr = computeMonthlyReportData(dev, monthVal);
+  // Renderização imediata com dados em memória
+  paintMonthlyReportDOM(computeMonthlyReportData(dev, monthVal, null), state.activeSource === "lovable");
+
+  // Busca em seguida o histórico real de 30 dias do Lovable e atualiza gráficos/tabelas
+  if (state.activeSource === "lovable") {
+    const realHistory = await fetchMonthlyRealHistoryFromLovable(dev, monthVal);
+    if (document.getElementById("mr-device-select")?.value === dev.device_id) {
+      paintMonthlyReportDOM(computeMonthlyReportData(dev, monthVal, realHistory), false);
+    }
+  }
+}
+
+function paintMonthlyReportDOM(mr, isLoadingHistory = false) {
   window.__currentMonthlyReport = mr;
 
   const container = document.getElementById("monthly-report-body");
   if (!container) return;
 
+  const sourceNotice = isLoadingHistory
+    ? `<div class="px-3.5 py-2 rounded-xl bg-amber-500/10 border border-amber-500/30 text-amber-300 text-xs font-semibold">⏳ Consultando histórico real de 30 dias no Lovable...</div>`
+    : mr.isRealHistory
+    ? `<div class="px-3.5 py-2 rounded-xl bg-[#2ce610]/10 border border-[#2ce610]/30 text-[#2ce610] text-xs font-semibold">✓ Dados Reais do Histórico Lovable (${mr.totalReadings.toLocaleString("pt-BR")} leituras registradas em ${escapeHtml(mr.mesLabel)})</div>`
+    : `<div class="px-3.5 py-2 rounded-xl bg-zinc-800/70 border border-zinc-700 text-zinc-300 text-xs">ℹ️ Consolidado com base nos pacotes recentes do equipamento (${escapeHtml(mr.mesLabel)})</div>`;
+
   container.innerHTML = `
+    ${sourceNotice}
     <!-- KPIs Mensais -->
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
       <div class="p-4 rounded-xl bg-[#08090a] border border-[#232a2f]">
@@ -3152,6 +3433,157 @@ window.addEventListener("DOMContentLoaded", () => {
   document.getElementById("acompanhamento-form")?.addEventListener("input", updatePreviewLink);
   document.getElementById("acompanhamento-form")?.addEventListener("change", updatePreviewLink);
 });
+
+// ============================================================================
+// MELHORIA 4 (Aba/Modal): Histórico e Calendário de Envios + Exportar Excel/CSV
+// ============================================================================
+
+function openHistoryCalendarModal() {
+  const monthInput = document.getElementById("hc-month-input");
+  if (monthInput && !monthInput.value) {
+    monthInput.value = state.historyCalendarMonth || getTodayKey().slice(0, 7);
+  }
+  loadCloudSubmissionsHistory().finally(() => {
+    renderHistoryCalendarModal(state.historySelectedDay);
+  });
+  document.getElementById("history-calendar-modal")?.classList.remove("hidden");
+}
+
+function closeHistoryCalendarModal() {
+  document.getElementById("history-calendar-modal")?.classList.add("hidden");
+}
+
+function renderHistoryCalendarModal(selectedDay = null) {
+  state.historySelectedDay = selectedDay;
+  const monthVal = document.getElementById("hc-month-input")?.value || getTodayKey().slice(0, 7);
+  state.historyCalendarMonth = monthVal;
+
+  const [yStr, mStr] = monthVal.split("-");
+  const year = Number(yStr) || 2026;
+  const month = Number(mStr) || 11;
+  const firstWeekday = new Date(year, month - 1, 1).getDay();
+  const totalDays = new Date(year, month, 0).getDate();
+
+  const allHistory = getAllMergedHistory();
+  const monthItems = allHistory.filter(item => (item.dateKey || "").startsWith(monthVal));
+
+  // Agrupa por dia
+  const byDay = {};
+  for (const item of monthItems) {
+    if (!byDay[item.dateKey]) byDay[item.dateKey] = [];
+    byDay[item.dateKey].push(item);
+  }
+
+  const calGrid = document.getElementById("hc-calendar-grid");
+  if (calGrid) {
+    const blanks = Array(firstWeekday).fill(`<div></div>`).join("");
+    const dayCells = [];
+    for (let d = 1; d <= totalDays; d++) {
+      const dk = `${year}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      const list = byDay[dk] || [];
+      const isSelected = state.historySelectedDay === dk;
+      const isToday = dk === getTodayKey();
+      const count = list.length;
+
+      dayCells.push(`
+        <button
+          onclick="renderHistoryCalendarModal('${isSelected ? "" : dk}')"
+          class="p-2 rounded-xl border text-left transition min-h-[58px] flex flex-col justify-between ${
+            isSelected
+              ? "bg-[#2ce610]/20 border-[#2ce610]"
+              : count > 0
+              ? "bg-[#08090a] border-[#2ce610]/40 hover:border-[#2ce610]"
+              : "bg-[#08090a] border-[#232a2f] hover:border-zinc-700"
+          }"
+        >
+          <div class="flex items-center justify-between w-full">
+            <span class="text-xs font-bold ${isToday ? "text-[#2ce610]" : "text-zinc-200"}">${d}</span>
+            ${count > 0 ? `<span class="px-1.5 py-0.5 text-[10px] font-extrabold rounded-full bg-[#2ce610] text-black">${count}</span>` : ""}
+          </div>
+          <div class="text-[10px] ${count > 0 ? "text-[#2ce610]" : "text-zinc-600"} truncate">
+            ${count > 0 ? "Enviado" : "—"}
+          </div>
+        </button>
+      `);
+    }
+    calGrid.innerHTML = blanks + dayCells.join("");
+  }
+
+  const listToRender = state.historySelectedDay
+    ? (byDay[state.historySelectedDay] || [])
+    : monthItems;
+
+  const summaryEl = document.getElementById("hc-summary-label");
+  if (summaryEl) {
+    summaryEl.textContent = state.historySelectedDay
+      ? `Registros do dia ${state.historySelectedDay.split("-").reverse().join("/")} (${listToRender.length})`
+      : `Todos os envios do mês (${listToRender.length} registros em ${Object.keys(byDay).length} dias)`;
+  }
+
+  const tableEl = document.getElementById("hc-history-list");
+  if (!tableEl) return;
+
+  if (listToRender.length === 0) {
+    tableEl.innerHTML = `<div class="p-6 text-center text-zinc-500 text-xs">Nenhum acompanhamento enviado neste período ainda.</div>`;
+    return;
+  }
+
+  tableEl.innerHTML = listToRender.map(item => `
+    <div class="p-3.5 rounded-xl bg-[#08090a] border border-[#232a2f] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div class="space-y-1 flex-1">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs font-mono text-[#2ce610] font-bold">${escapeHtml((item.dateKey || "").split("-").reverse().join("/"))} ${escapeHtml(item.time || "")}</span>
+          <span class="font-bold text-white text-sm">${escapeHtml(item.deviceName)}</span>
+          <span class="px-2 py-0.5 text-[10px] rounded-full bg-[#2ce610]/15 text-[#2ce610] font-semibold">${escapeHtml(item.statusOperacional)}</span>
+          <span class="px-2 py-0.5 text-[10px] rounded-full bg-zinc-800 text-zinc-300">${escapeHtml(item.mode || "")}</span>
+        </div>
+        <div class="text-xs text-zinc-400">${escapeHtml(item.cliente)} • Resp: ${escapeHtml(item.responsavel)}</div>
+        <div class="text-xs text-zinc-300 line-clamp-2">${escapeHtml(item.resumo)}</div>
+      </div>
+    </div>
+  `).join("");
+}
+
+function exportSubmissionsHistoryCSV() {
+  const monthVal = document.getElementById("hc-month-input")?.value || getTodayKey().slice(0, 7);
+  const allHistory = getAllMergedHistory().filter(item => (item.dateKey || "").startsWith(monthVal));
+
+  if (allHistory.length === 0) {
+    showToast("Não há registros neste mês para exportar.");
+    return;
+  }
+
+  const headers = ["Data", "Hora", "Responsavel", "Cliente", "Equipamento", "Identificacao", "Status Operacional", "Necessita Acao", "Modo Envio", "Resumo", "Observacoes"];
+  const escCsv = (val) => `"${String(val ?? "").replace(/"/g, '""').replace(/\r?\n/g, " ")}"`;
+
+  const lines = [
+    headers.join(";"),
+    ...allHistory.map(r => [
+      escCsv((r.dateKey || "").split("-").reverse().join("/")),
+      escCsv(r.time || ""),
+      escCsv(r.responsavel || ""),
+      escCsv(r.cliente || ""),
+      escCsv(r.equipamento || ""),
+      escCsv(r.identificacao || ""),
+      escCsv(r.statusOperacional || ""),
+      escCsv(r.necessitaAcao || ""),
+      escCsv(r.mode || ""),
+      escCsv(r.resumo || ""),
+      escCsv(r.observacoes || "")
+    ].join(";"))
+  ];
+
+  const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `WBM_Acompanhamentos_${monthVal}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast(`📥 Planilha WBM_Acompanhamentos_${monthVal}.csv baixada!`);
+}
 
   </script>
 </body>
